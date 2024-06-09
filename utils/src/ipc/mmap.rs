@@ -325,9 +325,6 @@ impl Drop for MmappedBytes {
     }
 }
 
-unsafe impl Send for MmappedBytes {}
-unsafe impl Sync for MmappedBytes {}
-
 pub struct MmappedStr {
     base_ptr: NonNull<std::ffi::c_void>,
     ptr: NonNull<std::ffi::c_void>,
@@ -375,9 +372,6 @@ impl MmappedStr {
         unsafe { std::str::from_utf8_unchecked(s) }
     }
 }
-
-unsafe impl Send for MmappedStr {}
-unsafe impl Sync for MmappedStr {}
 
 impl Drop for MmappedStr {
     #[inline]

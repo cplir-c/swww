@@ -22,12 +22,10 @@ use wayland::{
 use std::{
     fs,
     io::{IsTerminal, Write},
+    rc::Rc,
     num::{NonZeroI32, NonZeroU32},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -54,7 +52,7 @@ extern "C" fn signal_handler(_s: libc::c_int) {
 }
 
 struct Daemon {
-    wallpapers: Vec<Arc<Wallpaper>>,
+    wallpapers: Vec<Rc<Wallpaper>>,
     transition_animators: Vec<TransitionAnimator>,
     image_animators: Vec<ImageAnimator>,
     use_cache: bool,
@@ -119,7 +117,7 @@ impl Daemon {
         };
 
         debug!("New output: {output_name}");
-        self.wallpapers.push(Arc::new(Wallpaper::new(
+        self.wallpapers.push(Rc::new(Wallpaper::new(
             output,
             output_name,
             surface,
@@ -201,12 +199,12 @@ impl Daemon {
             .collect()
     }
 
-    fn find_wallpapers_by_names(&self, names: &[MmappedStr]) -> Vec<Arc<Wallpaper>> {
+    fn find_wallpapers_by_names(&self, names: &[MmappedStr]) -> Vec<Rc<Wallpaper>> {
         self.wallpapers
             .iter()
             .filter_map(|wallpaper| {
                 if names.is_empty() || names.iter().any(|n| wallpaper.has_name(n.str())) {
-                    return Some(Arc::clone(wallpaper));
+                    return Some(Rc::clone(wallpaper));
                 }
                 None
             })
@@ -266,7 +264,7 @@ impl Daemon {
         }
     }
 
-    fn stop_animations(&mut self, wallpapers: &[Arc<Wallpaper>]) {
+    fn stop_animations(&mut self, wallpapers: &[Rc<Wallpaper>]) {
         self.transition_animators
             .iter_mut()
             .for_each(|t| t.wallpapers.retain(|w| !wallpapers.contains(w)));
@@ -300,6 +298,7 @@ impl wayland::interfaces::wl_registry::EvHandler for Daemon {
 
     fn global_remove(&mut self, name: u32) {
         self.wallpapers.retain(|w| !w.has_output_name(name));
+        todo!("ALSO REMOVE FROM ANIMATIONS");
     }
 }
 
@@ -414,7 +413,7 @@ impl wayland::interfaces::wl_surface::EvHandler for Daemon {
 impl wayland::interfaces::wl_buffer::EvHandler for Daemon {
     fn release(&mut self, sender_id: ObjectId) {
         for wallpaper in self.wallpapers.iter() {
-            let strong_count = Arc::strong_count(wallpaper);
+            let strong_count = Rc::strong_count(wallpaper);
             if wallpaper.try_set_buffer_release_flag(sender_id, strong_count) {
                 break;
             }

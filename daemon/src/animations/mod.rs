@@ -1,7 +1,7 @@
 use log::error;
 
 use std::{
-    sync::Arc,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -16,7 +16,7 @@ mod transitions;
 use transitions::Effect;
 
 pub struct TransitionAnimator {
-    pub wallpapers: Vec<Arc<Wallpaper>>,
+    pub wallpapers: Vec<Rc<Wallpaper>>,
     fps: Duration,
     effect: Effect,
     img: MmappedBytes,
@@ -27,7 +27,7 @@ pub struct TransitionAnimator {
 
 impl TransitionAnimator {
     pub fn new(
-        mut wallpapers: Vec<Arc<Wallpaper>>,
+        mut wallpapers: Vec<Rc<Wallpaper>>,
         transition: &ipc::Transition,
         img_req: ImgReq,
         animation: Option<Animation>,
@@ -101,7 +101,7 @@ impl TransitionAnimator {
 
 pub struct ImageAnimator {
     now: Instant,
-    pub wallpapers: Vec<Arc<Wallpaper>>,
+    pub wallpapers: Vec<Rc<Wallpaper>>,
     animation: Animation,
     decompressor: Decompressor,
     i: usize,

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{rc::Rc, time::Instant};
 
 use utils::ipc::{Transition, TransitionType};
 
@@ -42,7 +42,7 @@ impl None {
     fn new() -> Self {
         Self
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         wallpapers
             .iter()
             .for_each(|w| w.canvas_change(|canvas| canvas.copy_from_slice(img)));
@@ -74,7 +74,7 @@ impl Effect {
         }
     }
 
-    pub fn execute(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    pub fn execute(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let done = match self {
             Effect::None(effect) => effect.run(wallpapers, img),
             Effect::Simple(effect) => effect.run(wallpapers, img),
@@ -108,7 +108,7 @@ impl Simple {
     fn new(step: u8) -> Self {
         Self { step }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let step = self.step;
         let mut done = true;
         for wallpaper in wallpapers.iter() {
@@ -135,7 +135,7 @@ impl Fade {
         let step = 0;
         Self { start, seq, step }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         for wallpaper in wallpapers.iter() {
             wallpaper.canvas_change(|canvas| {
                 for (old, new) in canvas.iter_mut().zip(img) {
@@ -209,7 +209,7 @@ impl Wave {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -345,7 +345,7 @@ impl Wipe {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -433,7 +433,7 @@ impl Grow {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -518,7 +518,7 @@ impl Outer {
             dist_center,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Arc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
         let Self {
             width,
             height,

@@ -3,10 +3,7 @@ use utils::ipc::{BgImg, BgInfo, Scale};
 
 use std::{
     num::NonZeroI32,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Condvar, Mutex, RwLock,
-    },
+    sync::{atomic::AtomicBool, Arc, Condvar, Mutex, RwLock},
 };
 
 use crate::wayland::{
@@ -17,16 +14,6 @@ use crate::wayland::{
     },
     ObjectId, WlDynObj,
 };
-
-#[derive(Debug)]
-struct AnimationState {
-    id: AtomicUsize,
-}
-
-#[derive(Debug)]
-pub(super) struct AnimationToken {
-    id: usize,
-}
 
 struct FrameCallbackHandler {
     cvar: Condvar,
@@ -88,7 +75,6 @@ pub(super) struct Wallpaper {
     inner: RwLock<WallpaperInner>,
     inner_staging: Mutex<WallpaperInner>,
 
-    animation_state: AnimationState,
     pub configured: AtomicBool,
 
     frame_callback_handler: FrameCallbackHandler,
@@ -140,9 +126,6 @@ impl Wallpaper {
             layer_surface,
             inner,
             inner_staging,
-            animation_state: AnimationState {
-                id: AtomicUsize::new(0),
-            },
             configured: AtomicBool::new(false),
             frame_callback_handler,
             img: Mutex::new(BgImg::Color([0, 0, 0])),
@@ -353,13 +336,6 @@ impl Wallpaper {
         self.wp_fractional.is_some_and(|f| f == fractional_scale)
     }
 
-    pub(super) fn has_animation_id(&self, token: &AnimationToken) -> bool {
-        self.animation_state
-            .id
-            .load(std::sync::atomic::Ordering::Acquire)
-            == token.id
-    }
-
     pub(super) fn get_dimensions(&self) -> (u32, u32) {
         let inner = self.inner.read().unwrap();
         let dim = inner
@@ -373,11 +349,6 @@ impl Wallpaper {
         F: FnOnce(&mut [u8]) -> T,
     {
         f(self.pool.lock().unwrap().get_drawable())
-    }
-
-    pub(super) fn create_animation_token(&self) -> AnimationToken {
-        let id = self.animation_state.id.load(Ordering::Acquire);
-        AnimationToken { id }
     }
 
     pub(super) fn frame_callback_completed(&self) {

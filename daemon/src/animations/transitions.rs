@@ -1,4 +1,4 @@
-use std::{rc::Rc, time::Instant};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use utils::ipc::{Transition, TransitionType};
 
@@ -42,10 +42,11 @@ impl None {
     fn new() -> Self {
         Self
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
-        wallpapers
-            .iter()
-            .for_each(|w| w.canvas_change(|canvas| canvas.copy_from_slice(img)));
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
+        wallpapers.iter().for_each(|w| {
+            w.borrow_mut()
+                .canvas_change(|canvas| canvas.copy_from_slice(img))
+        });
         true
     }
 }
@@ -74,7 +75,7 @@ impl Effect {
         }
     }
 
-    pub fn execute(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    pub fn execute(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let done = match self {
             Effect::None(effect) => effect.run(wallpapers, img),
             Effect::Simple(effect) => effect.run(wallpapers, img),
@@ -108,11 +109,11 @@ impl Simple {
     fn new(step: u8) -> Self {
         Self { step }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let step = self.step;
         let mut done = true;
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 for (old, new) in canvas.iter_mut().zip(img) {
                     change_byte(step, old, new);
                 }
@@ -135,9 +136,9 @@ impl Fade {
         let step = 0;
         Self { start, seq, step }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 for (old, new) in canvas.iter_mut().zip(img) {
                     let x = *old as u16 * (256 - self.step);
                     let y = *new as u16 * self.step;
@@ -209,7 +210,7 @@ impl Wave {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -244,7 +245,7 @@ impl Wave {
         self.seq.advance_to(self.start.elapsed().as_secs_f64());
 
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 // divide in 3 sections: the one we know will not be drawn to, the one we know
                 // WILL be drawn to, and the one we need to do a more expensive check on.
                 // We do this by creating 2 lines: the first tangential to the wave's peaks,
@@ -345,7 +346,7 @@ impl Wipe {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -361,7 +362,7 @@ impl Wipe {
         let offset = self.seq.now() as f64;
         self.seq.advance_to(self.start.elapsed().as_secs_f64());
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 // line formula: (x-h)*a + (y-k)*b + C = r^2
                 // https://www.desmos.com/calculator/vpvzk12yar
                 for line in 0..height {
@@ -433,7 +434,7 @@ impl Grow {
             step,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -447,7 +448,7 @@ impl Grow {
         let channels = globals::pixel_format().channels() as usize;
 
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 let line_begin = center_y.saturating_sub(dist_center as usize);
                 let line_end = height.min(center_y + dist_center as usize);
 
@@ -518,7 +519,7 @@ impl Outer {
             dist_center,
         }
     }
-    fn run(&mut self, wallpapers: &mut [Rc<Wallpaper>], img: &[u8]) -> bool {
+    fn run(&mut self, wallpapers: &mut [Rc<RefCell<Wallpaper>>], img: &[u8]) -> bool {
         let Self {
             width,
             height,
@@ -531,7 +532,7 @@ impl Outer {
         } = *self;
         let channels = globals::pixel_format().channels() as usize;
         for wallpaper in wallpapers.iter() {
-            wallpaper.canvas_change(|canvas| {
+            wallpaper.borrow_mut().canvas_change(|canvas| {
                 // to plot half a circle with radius r, we do sqrt(r^2 - x^2)
                 for line in 0..height {
                     let offset = (dist_center.powi(2) - (center_y as f32 - line as f32).powi(2))

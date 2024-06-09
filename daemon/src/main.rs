@@ -20,11 +20,12 @@ use wayland::{
 };
 
 use std::{
+    cell::RefCell,
     fs,
     io::{IsTerminal, Write},
-    rc::Rc,
     num::{NonZeroI32, NonZeroU32},
     path::PathBuf,
+    rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -52,7 +53,7 @@ extern "C" fn signal_handler(_s: libc::c_int) {
 }
 
 struct Daemon {
-    wallpapers: Vec<Rc<Wallpaper>>,
+    wallpapers: Vec<Rc<RefCell<Wallpaper>>>,
     transition_animators: Vec<TransitionAnimator>,
     image_animators: Vec<ImageAnimator>,
     use_cache: bool,
@@ -117,14 +118,14 @@ impl Daemon {
         };
 
         debug!("New output: {output_name}");
-        self.wallpapers.push(Rc::new(Wallpaper::new(
+        self.wallpapers.push(Rc::new(RefCell::new(Wallpaper::new(
             output,
             output_name,
             surface,
             viewport,
             wp_fractional,
             layer_surface,
-        )));
+        ))));
     }
 
     fn recv_socket_msg(&mut self, stream: OwnedFd) {
@@ -142,6 +143,7 @@ impl Daemon {
                 let wallpapers = self.find_wallpapers_by_names(&clear.outputs);
                 self.stop_animations(&wallpapers);
                 for wallpaper in &wallpapers {
+                    let mut wallpaper = wallpaper.borrow_mut();
                     wallpaper.set_img_info(utils::ipc::BgImg::Color(clear.color));
                     wallpaper.clear(clear.color);
                 }
@@ -150,11 +152,11 @@ impl Daemon {
 
                 Answer::Ok
             }
-            RequestRecv::Ping => Answer::Ping(
-                self.wallpapers
-                    .iter()
-                    .all(|w| w.configured.load(std::sync::atomic::Ordering::Acquire)),
-            ),
+            RequestRecv::Ping => Answer::Ping(self.wallpapers.iter().all(|w| {
+                w.borrow()
+                    .configured
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })),
             RequestRecv::Kill => {
                 exit_daemon();
                 Answer::Ok
@@ -195,15 +197,15 @@ impl Daemon {
     fn wallpapers_info(&self) -> Box<[BgInfo]> {
         self.wallpapers
             .iter()
-            .map(|wallpaper| wallpaper.get_bg_info())
+            .map(|wallpaper| wallpaper.borrow().get_bg_info())
             .collect()
     }
 
-    fn find_wallpapers_by_names(&self, names: &[MmappedStr]) -> Vec<Rc<Wallpaper>> {
+    fn find_wallpapers_by_names(&self, names: &[MmappedStr]) -> Vec<Rc<RefCell<Wallpaper>>> {
         self.wallpapers
             .iter()
             .filter_map(|wallpaper| {
-                if names.is_empty() || names.iter().any(|n| wallpaper.has_name(n.str())) {
+                if names.is_empty() || names.iter().any(|n| wallpaper.borrow().has_name(n.str())) {
                     return Some(Rc::clone(wallpaper));
                 }
                 None
@@ -217,7 +219,11 @@ impl Daemon {
         let mut i = 0;
         while i < self.transition_animators.len() {
             let animator = &mut self.transition_animators[i];
-            if animator.wallpapers.iter().all(|w| w.is_draw_ready()) {
+            if animator
+                .wallpapers
+                .iter()
+                .all(|w| w.borrow().is_draw_ready())
+            {
                 let time = animator.time_to_draw();
                 if time > Duration::from_micros(1200) {
                     self.poll_time = 1;
@@ -245,7 +251,11 @@ impl Daemon {
 
         self.image_animators.retain(|a| !a.wallpapers.is_empty());
         for animator in &mut self.image_animators {
-            if animator.wallpapers.iter().all(|w| w.is_draw_ready()) {
+            if animator
+                .wallpapers
+                .iter()
+                .all(|w| w.borrow().is_draw_ready())
+            {
                 let time = animator.time_to_draw();
                 if time > Duration::from_micros(1200) {
                     self.poll_time = 1;
@@ -264,16 +274,31 @@ impl Daemon {
         }
     }
 
-    fn stop_animations(&mut self, wallpapers: &[Rc<Wallpaper>]) {
-        self.transition_animators
-            .iter_mut()
-            .for_each(|t| t.wallpapers.retain(|w| !wallpapers.contains(w)));
+    fn stop_animations(&mut self, wallpapers: &[Rc<RefCell<Wallpaper>>]) {
+        for wallpaper in wallpapers {
+            for transition in self.transition_animators.iter_mut() {
+                if let Some(i) = transition
+                    .wallpapers
+                    .iter()
+                    .position(|w| *w.borrow() == *wallpaper.borrow())
+                {
+                    transition.wallpapers.swap_remove(i);
+                }
+            }
+
+            for animator in self.image_animators.iter_mut() {
+                if let Some(i) = animator
+                    .wallpapers
+                    .iter()
+                    .position(|w| *w.borrow() == *wallpaper.borrow())
+                {
+                    animator.wallpapers.swap_remove(i);
+                }
+            }
+        }
         self.transition_animators
             .retain(|t| !t.wallpapers.is_empty());
 
-        self.image_animators
-            .iter_mut()
-            .for_each(|t| t.wallpapers.retain(|w| !wallpapers.contains(w)));
         self.image_animators.retain(|a| !a.wallpapers.is_empty());
     }
 }
@@ -297,7 +322,8 @@ impl wayland::interfaces::wl_registry::EvHandler for Daemon {
     }
 
     fn global_remove(&mut self, name: u32) {
-        self.wallpapers.retain(|w| !w.has_output_name(name));
+        self.wallpapers
+            .retain(|w| !w.borrow().has_output_name(name));
         todo!("ALSO REMOVE FROM ANIMATIONS");
     }
 }
@@ -324,6 +350,7 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
         transform: i32,
     ) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_output(sender_id) {
                 if transform as u32 > wayland::interfaces::wl_output::transform::FLIPPED_270 {
                     error!("received invalid transform value from compositor: {transform}")
@@ -337,6 +364,7 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
 
     fn mode(&mut self, sender_id: ObjectId, _flags: u32, width: i32, height: i32, _refresh: i32) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_output(sender_id) {
                 wallpaper.set_dimensions(width, height);
                 break;
@@ -346,8 +374,10 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
 
     fn done(&mut self, sender_id: ObjectId) {
         for wallpaper in self.wallpapers.iter() {
-            if wallpaper.has_output(sender_id) {
-                wallpaper.commit_surface_changes(self.use_cache);
+            if wallpaper.borrow().has_output(sender_id) {
+                wallpaper
+                    .borrow_mut()
+                    .commit_surface_changes(self.use_cache);
                 self.stop_animations(&[wallpaper.clone()]);
                 break;
             }
@@ -356,6 +386,7 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
 
     fn scale(&mut self, sender_id: ObjectId, factor: i32) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_output(sender_id) {
                 match NonZeroI32::new(factor) {
                     Some(factor) => wallpaper.set_scale(Scale::Whole(factor)),
@@ -368,6 +399,7 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
 
     fn name(&mut self, sender_id: ObjectId, name: &str) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_output(sender_id) {
                 wallpaper.set_name(name.to_string());
                 break;
@@ -377,6 +409,7 @@ impl wayland::interfaces::wl_output::EvHandler for Daemon {
 
     fn description(&mut self, sender_id: ObjectId, description: &str) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_output(sender_id) {
                 wallpaper.set_desc(description.to_string());
                 break;
@@ -395,6 +428,7 @@ impl wayland::interfaces::wl_surface::EvHandler for Daemon {
 
     fn preferred_buffer_scale(&mut self, sender_id: ObjectId, factor: i32) {
         for wallpaper in self.wallpapers.iter() {
+            let mut wallpaper = wallpaper.borrow_mut();
             if wallpaper.has_surface(sender_id) {
                 match NonZeroI32::new(factor) {
                     Some(factor) => wallpaper.set_scale(Scale::Whole(factor)),
@@ -414,7 +448,10 @@ impl wayland::interfaces::wl_buffer::EvHandler for Daemon {
     fn release(&mut self, sender_id: ObjectId) {
         for wallpaper in self.wallpapers.iter() {
             let strong_count = Rc::strong_count(wallpaper);
-            if wallpaper.try_set_buffer_release_flag(sender_id, strong_count) {
+            if wallpaper
+                .borrow_mut()
+                .try_set_buffer_release_flag(sender_id, strong_count)
+            {
                 break;
             }
         }
@@ -424,8 +461,8 @@ impl wayland::interfaces::wl_buffer::EvHandler for Daemon {
 impl wayland::interfaces::wl_callback::EvHandler for Daemon {
     fn done(&mut self, sender_id: ObjectId, _callback_data: u32) {
         for wallpaper in self.wallpapers.iter() {
-            if wallpaper.has_callback(sender_id) {
-                wallpaper.frame_callback_completed();
+            if wallpaper.borrow().has_callback(sender_id) {
+                wallpaper.borrow_mut().frame_callback_completed();
                 self.draw();
                 break;
             }
@@ -436,7 +473,7 @@ impl wayland::interfaces::wl_callback::EvHandler for Daemon {
 impl wayland::interfaces::zwlr_layer_surface_v1::EvHandler for Daemon {
     fn configure(&mut self, sender_id: ObjectId, serial: u32, _width: u32, _height: u32) {
         for wallpaper in self.wallpapers.iter() {
-            if wallpaper.has_layer_surface(sender_id) {
+            if wallpaper.borrow().has_layer_surface(sender_id) {
                 wayland::interfaces::zwlr_layer_surface_v1::req::ack_configure(sender_id, serial)
                     .unwrap();
                 break;
@@ -445,18 +482,22 @@ impl wayland::interfaces::zwlr_layer_surface_v1::EvHandler for Daemon {
     }
 
     fn closed(&mut self, sender_id: ObjectId) {
-        self.wallpapers.retain(|w| !w.has_layer_surface(sender_id));
+        self.wallpapers
+            .retain(|w| !w.borrow().has_layer_surface(sender_id));
     }
 }
 
 impl wayland::interfaces::wp_fractional_scale_v1::EvHandler for Daemon {
     fn preferred_scale(&mut self, sender_id: ObjectId, scale: u32) {
         for wallpaper in self.wallpapers.iter() {
-            if wallpaper.has_fractional_scale(sender_id) {
+            if wallpaper.borrow().has_fractional_scale(sender_id) {
                 match NonZeroI32::new(scale as i32) {
                     Some(factor) => {
-                        wallpaper.set_scale(Scale::Fractional(factor));
-                        if wallpaper.commit_surface_changes(self.use_cache) {
+                        wallpaper.borrow_mut().set_scale(Scale::Fractional(factor));
+                        if wallpaper
+                            .borrow_mut()
+                            .commit_surface_changes(self.use_cache)
+                        {
                             self.stop_animations(&[wallpaper.clone()]);
                         }
                     }

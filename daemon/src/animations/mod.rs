@@ -3,11 +3,12 @@ use log::error;
 use std::{
     sync::Arc,
     thread::{self, Scope},
+    time::Instant,
 };
 
 use utils::{
     compression::Decompressor,
-    ipc::{self, Animation, Answer, BgImg, ImgReq},
+    ipc::{self, Animation, Answer, BgImg, ImgReq, MmappedBytes},
 };
 
 use crate::{
@@ -26,6 +27,139 @@ const STACK_SIZE: usize = 1 << 17; //128KiB
 
 pub(super) struct Animator {
     anim_barrier: ArcAnimBarrier,
+}
+
+pub struct TransitionAnimator {
+    pub wallpapers: Vec<Arc<Wallpaper>>,
+    transition: Transition,
+    effect: Effect,
+    img: MmappedBytes,
+    animation: Option<Animation>,
+    now: Instant,
+    over: bool,
+}
+
+impl TransitionAnimator {
+    pub fn new(
+        mut wallpapers: Vec<Arc<Wallpaper>>,
+        transition: &ipc::Transition,
+        img_req: ImgReq,
+        animation: Option<Animation>,
+    ) -> Option<Self> {
+        let ImgReq { img, path, dim, .. } = img_req;
+        if wallpapers.is_empty() {
+            return None;
+        }
+        for w in wallpapers.iter_mut() {
+            w.set_img_info(BgImg::Img(path.str().to_string()));
+        }
+
+        let expect = wallpapers[0].get_dimensions();
+        if dim != expect {
+            error!("image has wrong dimensions! Expect {expect:?}, actual {dim:?}");
+            return None;
+        }
+        let transition = Transition::new(dim, transition);
+        let effect = Effect::new(&transition);
+        Some(Self {
+            wallpapers,
+            transition,
+            effect,
+            img,
+            animation,
+            now: Instant::now(),
+            over: false,
+        })
+    }
+
+    pub fn time_to_draw(&self) -> std::time::Duration {
+        self.transition.fps.saturating_sub(self.now.elapsed())
+    }
+
+    pub fn updt_time(&mut self) {
+        self.now = Instant::now();
+    }
+
+    pub fn frame(&mut self) -> bool {
+        let Self {
+            wallpapers,
+            transition,
+            effect,
+            img,
+            over,
+            ..
+        } = self;
+        if !*over {
+            *over = transition.execute(wallpapers, effect, img.bytes());
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn into_image_animator(self) -> Option<ImageAnimator> {
+        let Self {
+            wallpapers,
+            animation,
+            ..
+        } = self;
+
+        animation.map(|animation| ImageAnimator {
+            now: Instant::now(),
+            wallpapers,
+            animation,
+            decompressor: Decompressor::new(),
+            i: 0,
+        })
+    }
+}
+
+pub struct ImageAnimator {
+    now: Instant,
+    pub wallpapers: Vec<Arc<Wallpaper>>,
+    animation: Animation,
+    decompressor: Decompressor,
+    i: usize,
+}
+
+impl ImageAnimator {
+    pub fn time_to_draw(&self) -> std::time::Duration {
+        self.animation.animation[self.i % self.animation.animation.len()]
+            .1
+            .saturating_sub(self.now.elapsed())
+    }
+
+    pub fn updt_time(&mut self) {
+        self.now = Instant::now();
+    }
+
+    pub fn frame(&mut self) {
+        let Self {
+            wallpapers,
+            animation,
+            decompressor,
+            i,
+            ..
+        } = self;
+
+        let frame = &animation.animation[*i % animation.animation.len()].0;
+
+        let mut j = 0;
+        while j < wallpapers.len() {
+            let result = wallpapers[j].canvas_change(|canvas| {
+                decompressor.decompress(frame, canvas, globals::pixel_format())
+            });
+
+            if let Err(e) = result {
+                error!("failed to unpack frame: {e}");
+                wallpapers.swap_remove(j);
+                continue;
+            }
+            j += 1;
+        }
+
+        *i += 1;
+    }
 }
 
 impl Animator {
@@ -63,9 +197,9 @@ impl Animator {
                     return;
                 }
 
-                let transition = Transition::new(wallpapers, dim, transition);
+                let mut transition = Transition::new(dim, transition);
                 let mut effect = Effect::new(&transition);
-                transition.execute(&mut effect, img);
+                while !transition.execute(wallpapers, &mut effect, img) {}
             })
             .unwrap(); // builder only fails if name contains null bytes
     }
@@ -168,7 +302,7 @@ impl Animator {
                         return;
                     }
 
-                    crate::wallpaper::attach_buffers_and_damange_surfaces(&wallpapers);
+                    crate::wallpaper::attach_buffers_and_damage_surfaces(&wallpapers);
                     let timeout = duration.saturating_sub(now.elapsed());
                     crate::spin_sleep(timeout);
                     crate::wallpaper::commit_wallpapers(&wallpapers);

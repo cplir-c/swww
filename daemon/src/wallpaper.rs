@@ -96,6 +96,12 @@ pub(super) struct Wallpaper {
     pool: Mutex<BumpPool>,
 }
 
+impl std::cmp::PartialEq for Wallpaper {
+    fn eq(&self, other: &Self) -> bool {
+        self.output_name == other.output_name
+    }
+}
+
 impl Wallpaper {
     pub(crate) fn new(
         output: ObjectId,
@@ -227,7 +233,7 @@ impl Wallpaper {
         }
     }
 
-    pub fn commit_surface_changes(&self, use_cache: bool) {
+    pub fn commit_surface_changes(&self, use_cache: bool) -> bool {
         use wl_output::transform;
         let mut inner = self.inner.write().unwrap();
         let staging = self.inner_staging.lock().unwrap();
@@ -274,9 +280,8 @@ impl Wallpaper {
         inner.name.clone_from(&staging.name);
         inner.desc.clone_from(&staging.desc);
         if (inner.width, inner.height) == (width, height) {
-            return;
+            return false;
         }
-        self.stop_animations();
         inner.width = width;
         inner.height = height;
 
@@ -299,6 +304,7 @@ impl Wallpaper {
         wl_surface::req::commit(self.wl_surface).unwrap();
         self.configured
             .store(true, std::sync::atomic::Ordering::Release);
+        true
     }
 
     pub(super) fn has_name(&self, name: &str) -> bool {
@@ -333,6 +339,10 @@ impl Wallpaper {
             .lock()
             .unwrap()
             .set_buffer_release_flag(buffer, arc_strong_count != 1)
+    }
+
+    pub fn is_draw_ready(&self) -> bool {
+        *self.frame_callback_handler.done.lock().unwrap()
     }
 
     pub(super) fn has_callback(&self, callback: ObjectId) -> bool {
@@ -375,10 +385,6 @@ impl Wallpaper {
         self.frame_callback_handler.cvar.notify_all();
     }
 
-    fn stop_animations(&self) {
-        self.animation_state.id.fetch_add(1, Ordering::AcqRel);
-    }
-
     pub(super) fn clear(&self, color: [u8; 3]) {
         self.canvas_change(|canvas| {
             for pixel in canvas.chunks_exact_mut(globals::pixel_format().channels().into()) {
@@ -397,15 +403,8 @@ impl Wallpaper {
     }
 }
 
-/// stops all animations for the passed wallpapers
-pub(crate) fn stop_animations(wallpapers: &[Arc<Wallpaper>]) {
-    wallpapers
-        .iter()
-        .for_each(|wallpaper| wallpaper.stop_animations());
-}
-
 /// attaches all pending buffers and damages all surfaces with one single request
-pub(crate) fn attach_buffers_and_damange_surfaces(wallpapers: &[Arc<Wallpaper>]) {
+pub(crate) fn attach_buffers_and_damage_surfaces(wallpapers: &[Arc<Wallpaper>]) {
     #[rustfmt::skip]
     // Note this is little-endian specific
     const MSG: [u8; 56] = [
